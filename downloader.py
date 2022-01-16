@@ -7,7 +7,7 @@
 import os
 
 import google_auth_oauthlib.flow
-
+import json
 from googleapiclient.discovery import Resource
 import googleapiclient.discovery
 import googleapiclient.errors
@@ -15,14 +15,17 @@ import multiprocessing as mp
 from yt_dlp import YoutubeDL
 from pprint import pprint
 from urllib.parse import urlparse
-from typing import Union
+from typing import Callable
+from concurrent.futures import ProcessPoolExecutor
+import asyncio
+from functools import partial
 
 scopes = ["https://www.googleapis.com/auth/youtube.readonly"]
 
 class Downloader():
 
     youtube: Resource
-    params = {'format': 'bestaudio'}
+    params: dict = {'format': 'bestaudio'}
 
     def set_download_path(self, home, temp=None):
         paths = {}
@@ -36,7 +39,6 @@ class Downloader():
         # Disable OAuthlib's HTTPS verification when running locally.
         # *DO NOT* leave this option enabled in production.
         os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
-
         api_service_name = "youtube"
         api_version = "v3"
         client_secrets_file = "client_secret.json"
@@ -50,45 +52,45 @@ class Downloader():
 
         self.youtube = youtube
 
-    def download_video(self, work_queue):
-        info_list = []
+    def download_video(self, url):
         with YoutubeDL(self.params) as yt:
-            while not work_queue.empty():
-                video = work_queue.get()
-                info_list.append(yt.extract_info(video))
-        return info_list
+            info = yt.sanitize_info(yt.extract_info(url))
+            self.remove_unnecessary_data(info)
+            return info
 
-    def download_files(self, playlist_ids):
+    def remove_unnecessary_data(self, info):
+        del info["thumbnails"]
+        del info["formats"]
+        del info["url"]
+        del info["http_headers"]
+
+    async def download_files(self, playlist_ids, func: Callable):
         num_processes = 8
-        m = mp.Manager()
-        q = m.Queue()
-
-        # TODO: make this into a work queue because this would likely be inefficient in the case of 
-        # a playlist where the videos have a significant variance in size
-        id_list = ( "https://www.youtube.com/watch?v=" + playlist_id for playlist_id in playlist_ids)
-        for vid_id in id_list:
-            q.put(vid_id)
+        ppe = ProcessPoolExecutor(num_processes)
+        loop = asyncio.get_running_loop()
         
-        pprint(id_list)
+        url_list = ( "https://www.youtube.com/watch?v=" + playlist_id for playlist_id in playlist_ids)
+        videos = [loop.run_in_executor(ppe, partial(self.download_video, url)) for url in url_list]
         
-        p = mp.Pool(num_processes)
-
-        videos = p.map(self.download_video, [q for _ in range(num_processes)])
+        for coroutine in asyncio.as_completed(videos):
+            
+            info = await coroutine
+            print(info)
+            func(info)
         
         return videos
 
-    def fetch_playlist_item_ids(self, url):
+    def fetch_playlist_item_ids(self, url, func):
 
         # Parse the URL to get the playlist ID
         parsed = urlparse(url)
         query = parsed.query.split("&")
 
         try:
-            playlist_id = next(q.split("=")[1] for q in query if len(q) > 5 and q[:5] == "list=") #parsing urls is the worst
+            playlist_id = next(q.split("=")[1] for q in query if len(q) > 5 and q[:5] == "list=") 
         except Exception as e:
             raise e
 
-        
         request = self.youtube.playlistItems().list(
             part="contentDetails",
             playlistId=playlist_id
@@ -111,12 +113,7 @@ class Downloader():
             video_ids.extend( playlist_item["contentDetails"]["videoId"] 
                             for playlist_item in 
                             playlist_data['items']) # This is pleasantly readable
- 
         
+        videos = self.download_files(video_ids, func)
 
-        
-        pprint(video_ids)
-
-        videos = self.download_files(video_ids)
-
-        #return videos 
+        return videos 

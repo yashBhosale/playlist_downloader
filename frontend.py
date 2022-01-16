@@ -1,12 +1,15 @@
 import sys
-from PySide6.QtWidgets import (QWidget, QListWidget, QListWidgetItem, QApplication,
-                                QLabel, QToolButton, QPushButton, QLineEdit, 
-                                QHBoxLayout, QVBoxLayout, QSpacerItem, QStackedWidget,
+from PySide6.QtWidgets import (QWidget, QListWidget, QListWidgetItem, QLabel, 
+                                QToolButton, QPushButton, QLineEdit, QStackedWidget, 
+                                QHBoxLayout, QVBoxLayout, QSpacerItem,
                                 QMenuBar, QMenu, QMainWindow, QFileDialog)
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Signal
 from downloader import Downloader
-
+import qasync
+from qasync import asyncSlot, QApplication
+import asyncio
+from functools import partial
 
 class VideoListing(QWidget):
     title = ""
@@ -47,6 +50,7 @@ class DownloaderScreen(QWidget):
         self.urlbar_layout = QHBoxLayout()
         self.urlbar = QLineEdit()
         self.urlbar.setPlaceholderText("Enter playlist URL")
+        self.urlbar.setText("https://www.youtube.com/playlist?list=PLrGvezF6PokaPsPZn2TdL5pGc0Clm1rM-")
         self.fetch_button = QPushButton("Fetch")
         self.fetch_button.clicked.connect(self.fetch)
 
@@ -55,20 +59,26 @@ class DownloaderScreen(QWidget):
         self.w.setLayout(self.urlbar_layout)
 
         self.list = QListWidget()
+        
+        self.add_item_to_list({ 'title': "test_item"})
+        self.setLayout(QVBoxLayout(self))
+        self.layout().addWidget(self.w)
+        self.layout().addWidget(self.list)
+  
+    
+    def add_item_to_list(self, item_data):
         item = QListWidgetItem()
-        lwi = VideoListing( "Lindy focus livestream" )
+        lwi = VideoListing( item_data["title"] )
         
         item.setSizeHint(lwi.sizeHint())
         self.list.addItem(item)
         self.list.setItemWidget(item, lwi )
 
-        self.setLayout(QVBoxLayout(self))
-        self.layout().addWidget(self.w)
-        self.layout().addWidget(self.list)
-   
-    def fetch(self):
+    @asyncSlot()
+    async def fetch(self):
         url = self.urlbar.text()
-        self.youtube.fetch_playlist_item_ids(url)
+        add_func = self.add_item_to_list
+        await self.youtube.fetch_playlist_item_ids(url, add_func)
 
 class LoginScreen(QWidget):
     
@@ -83,8 +93,9 @@ class LoginScreen(QWidget):
         self._layout.addWidget(self.label)
         self._layout.addWidget(self.button)
         self.setLayout(self._layout)
-
-    def login(self):
+    
+    @asyncSlot()
+    async def login(self):
         self.logged_in.emit()
 
 class App(QMainWindow):
@@ -113,8 +124,9 @@ class App(QMainWindow):
         menubar = self.menuBar()
         fileMenu = menubar.addMenu("&File")
         fileMenu.addAction(set_download_path_action)
-        
-    def set_download_path(self):
+       
+    @asyncSlot()
+    async def set_download_path(self):
         fd = QFileDialog(self)
 
         fd.setFileMode(QFileDialog.Directory)
@@ -123,20 +135,38 @@ class App(QMainWindow):
         files = fd.selectedUrls()
         self.downloader.set_download_path(files[0].path())
 
-
-    def login(self):
+    @asyncSlot()
+    async def login(self):
         try:
             self.downloader.set_up_youtube()
             self.stack.setCurrentIndex(1)
         except:
             pass # create some kind of error
 
-if __name__ == "__main__":
-    app = QApplication([])
+async def main():
+    def close_future(future, loop):
+        loop.call_later(10, future.cancel)
+        future.cancel()
+
+    loop = asyncio.get_event_loop()
+    future = asyncio.Future()
+
+    app = QApplication.instance()
+    if hasattr(app, "aboutToQuit"):
+        getattr(app, "aboutToQuit").connect(
+            partial(close_future, future, loop)
+        )
 
     widget = App()
     widget.resize(800, 600)
     widget.show()
 
-    sys.exit(app.exec())
+    await future
+    return True
 
+
+if __name__ == "__main__":
+    try:
+        qasync.run(main())
+    except asyncio.exceptions.CancelledError:
+        sys.exit(0)
