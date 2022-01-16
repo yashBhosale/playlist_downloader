@@ -60,7 +60,6 @@ class DownloaderScreen(QWidget):
 
         self.list = QListWidget()
         
-        self.add_item_to_list({ 'title': "test_item"})
         self.setLayout(QVBoxLayout(self))
         self.layout().addWidget(self.w)
         self.layout().addWidget(self.list)
@@ -124,16 +123,30 @@ class App(QMainWindow):
         menubar = self.menuBar()
         fileMenu = menubar.addMenu("&File")
         fileMenu.addAction(set_download_path_action)
-       
+     
+    # This function and the related function call are thanks to
+    # https://github.com/duniter/sakia/blob/master/src/sakia/gui/widgets/dialogs.py
+    def dialog_async_exec(self, dialog):
+        future = asyncio.Future()
+        dialog.finished.connect(lambda r: future.set_result(r))
+        dialog.open()
+        return future
+
+
     @asyncSlot()
     async def set_download_path(self):
         fd = QFileDialog(self)
-
+        if sys.platform != 'linux':
+            fd.setOption(QFileDialog.DontUseNativeDialog, True)
         fd.setFileMode(QFileDialog.Directory)
         fd.setOption(QFileDialog.ShowDirsOnly)
-        fd.exec()
+        
+        await self.dialog_async_exec(fd)
+        
         files = fd.selectedUrls()
+        print(files)
         self.downloader.set_download_path(files[0].path())
+        print("hello")
 
     @asyncSlot()
     async def login(self):
